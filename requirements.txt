@@ -1,0 +1,4 @@
+pillow # 12.0.0
+datasets # 4.4.1
+huggingface_hub # 1.1.6
+tqdm # 4.67.1
