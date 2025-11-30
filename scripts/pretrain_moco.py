@@ -6,6 +6,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+import yaml
 
 from data.datasets import build_pretrain_dataset
 from engine.train_moco import train_moco
@@ -15,54 +16,36 @@ from utils.distributed import init_distributed_mode, is_main_process
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 6: LR scheduling)")
-
-    # basic training hyperparams
-    parser.add_argument("--epochs", type=int, default=200, help="number of epochs")
-    parser.add_argument("--batch-size", type=int, default=256, help="batch size")
-    parser.add_argument(
-        "--lr", type=float, default=0.03, help="base learning rate (before scaling/decay)"
+    parser = argparse.ArgumentParser(
+        description="MoCo v2 pretraining (Phase 7: YAML config)"
     )
 
-    # LR schedule
+    # main switch: which config file to use
     parser.add_argument(
-        "--warmup-epochs",
+        "--config",
+        type=str,
+        default="configs/moco_r50_96.yaml",
+        help="path to YAML config file",
+    )
+
+    # light overrides for quick debugging
+    parser.add_argument(
+        "--epochs",
         type=int,
-        default=10,
-        help="number of warmup epochs",
+        default=None,
+        help="override epochs from config (optional)",
     )
     parser.add_argument(
-        "--min-lr",
+        "--batch-size",
+        type=int,
+        default=None,
+        help="override batch size from config (optional)",
+    )
+    parser.add_argument(
+        "--lr",
         type=float,
-        default=0.0,
-        help="minimum learning rate (cosine decay end)",
-    )
-
-    # model / MoCo params
-    parser.add_argument(
-        "--backbone",
-        type=str,
-        default="resnet50",
-        choices=["resnet18", "resnet34", "resnet50"],
-    )
-    parser.add_argument("--dim", type=int, default=128, help="projection dim")
-    parser.add_argument("--K", type=int, default=65536, help="queue size")
-    parser.add_argument("--m", type=float, default=0.999, help="momentum for encoder_k")
-    parser.add_argument("--T", type=float, default=0.2, help="softmax temperature")
-    parser.add_argument("--no-mlp", action="store_true", help="disable MLP head")
-
-    # data
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        default="data/pretrain",
-        help="path to pretrain data root",
-    )
-    parser.add_argument(
-        "--image-size",
-        type=int,
-        default=96,
-        help="input image resolution (must stay 96 for course)",
+        default=None,
+        help="override base LR from config (optional)",
     )
     parser.add_argument(
         "--max-samples",
@@ -78,8 +61,8 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="checkpoints",
-        help="directory to save checkpoints",
+        default=None,
+        help="override output dir from config (optional)",
     )
     parser.add_argument(
         "--resume",
@@ -91,7 +74,7 @@ def parse_args():
         ),
     )
 
-    # distributed training
+    # distributed training (same as before)
     parser.add_argument(
         "--dist-url",
         type=str,
@@ -120,8 +103,19 @@ def parse_args():
     return parser.parse_args()
 
 
+def load_config(path: str) -> dict:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with open(path, "r") as f:
+        cfg = yaml.safe_load(f)
+    return cfg
+
+
 def main():
     args = parse_args()
+
+    # load YAML config
+    cfg = load_config(args.config)
 
     # initialize (or decide not to use) distributed mode
     init_distributed_mode(args)
@@ -136,11 +130,47 @@ def main():
 
     if is_main_process():
         print(f"Using device: {device}")
+        print(f"Using config: {args.config}")
+
+    # ----- read values from config -----
+    # model
+    model_cfg = cfg.get("model", {})
+    backbone = model_cfg.get("backbone", "resnet50")
+    dim = model_cfg.get("dim", 128)
+    K = model_cfg.get("K", 65536)
+    m = model_cfg.get("m", 0.999)
+    T = model_cfg.get("T", 0.2)
+    mlp = model_cfg.get("mlp", True)
+
+    # data
+    data_cfg = cfg.get("data", {})
+    data_root = data_cfg.get("root", "data/pretrain")
+    image_size = data_cfg.get("image_size", 96)
+    cfg_batch_size = data_cfg.get("batch_size", 256)
+
+    # optim
+    optim_cfg = cfg.get("optim", {})
+    cfg_epochs = optim_cfg.get("epochs", 200)
+    cfg_lr = optim_cfg.get("lr", 0.03)
+    warmup_epochs = optim_cfg.get("warmup_epochs", 10)
+    min_lr = optim_cfg.get("min_lr", 0.0)
+    weight_decay = optim_cfg.get("weight_decay", 1.0e-4)
+    momentum = optim_cfg.get("momentum", 0.9)
+
+    # checkpoint
+    ckpt_cfg = cfg.get("checkpoint", {})
+    cfg_output_dir = ckpt_cfg.get("output_dir", "checkpoints")
+
+    # apply CLI overrides (if provided)
+    epochs = args.epochs if args.epochs is not None else cfg_epochs
+    batch_size = args.batch_size if args.batch_size is not None else cfg_batch_size
+    base_lr = args.lr if args.lr is not None else cfg_lr
+    output_dir = args.output_dir if args.output_dir is not None else cfg_output_dir
 
     # dataset + dataloader
     dataset = build_pretrain_dataset(
-        root=args.data_root,
-        image_size=args.image_size,
+        root=data_root,
+        image_size=image_size,
     )
 
     if args.max_samples > 0:
@@ -163,7 +193,7 @@ def main():
 
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=(sampler is None),
         sampler=sampler,
         num_workers=4 if device.type == "cuda" else 0,
@@ -173,12 +203,12 @@ def main():
 
     # build MoCo model
     model = MoCo(
-        backbone=args.backbone,
-        dim=args.dim,
-        K=args.K,
-        m=args.m,
-        T=args.T,
-        mlp=not args.no_mlp,
+        backbone=backbone,
+        dim=dim,
+        K=K,
+        m=m,
+        T=T,
+        mlp=mlp,
     )
     model.to(device)
 
@@ -196,16 +226,16 @@ def main():
     # optimizer (MoCo v2 uses SGD + momentum)
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=args.lr,          # base LR (we'll schedule it per epoch)
-        momentum=0.9,
-        weight_decay=1e-4,
+        lr=base_lr,          # base LR (scheduled per epoch in train_moco)
+        momentum=momentum,
+        weight_decay=weight_decay,
     )
 
     # checkpoint path logic
     if args.resume:
         checkpoint_path = args.resume
     else:
-        checkpoint_path = os.path.join(args.output_dir, "checkpoint_latest.pth")
+        checkpoint_path = os.path.join(output_dir, "checkpoint_latest.pth")
 
     start_epoch = 0
     if os.path.isfile(checkpoint_path):
@@ -224,31 +254,38 @@ def main():
         elif is_main_process():
             print("No existing checkpoint found, training from scratch.")
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     if is_main_process():
         print("Starting training...")
         print(
-            f"LR schedule: base_lr={args.lr}, warmup_epochs={args.warmup_epochs}, "
-            f"min_lr={args.min_lr}, total_epochs={args.epochs}"
+            f"LR schedule: base_lr={base_lr}, warmup_epochs={warmup_epochs}, "
+            f"min_lr={min_lr}, total_epochs={epochs}"
         )
+        print(
+            f"Config: backbone={backbone}, dim={dim}, K={K}, m={m}, T={T}, mlp={mlp}"
+        )
+        print(
+            f"Data: root={data_root}, image_size={image_size}, batch_size={batch_size}"
+        )
+        print(f"Checkpoints: output_dir={output_dir}")
 
     train_moco(
         model=model,
         dataloader=dataloader,
         optimizer=optimizer,
         device=device,
-        epochs=args.epochs,
+        epochs=epochs,
         start_epoch=start_epoch,
         checkpoint_path=checkpoint_path,
         sampler=sampler,
-        base_lr=args.lr,
-        warmup_epochs=args.warmup_epochs,
-        min_lr=args.min_lr,
+        base_lr=base_lr,
+        warmup_epochs=warmup_epochs,
+        min_lr=min_lr,
     )
 
     if is_main_process():
-        print("Training finished (Phase 6 LR scheduling).")
+        print("Training finished (Phase 7 with YAML config).")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,26 @@
+experiment:
+  name: "moco_r50_96_base"
+
+model:
+  backbone: "resnet50"   # resnet18, resnet34, or resnet50
+  dim: 128               # projection dimension
+  K: 65536               # queue size
+  m: 0.999               # momentum for key encoder
+  T: 0.2                 # softmax temperature
+  mlp: true              # use 2-layer MLP projection head (MoCo v2)
+
+data:
+  root: "data/pretrain"
+  image_size: 96
+  batch_size: 256        # this is the "intended" GPU batch size
+
+optim:
+  epochs: 200            # total training epochs
+  lr: 0.03               # base learning rate (for batch_size=256)
+  warmup_epochs: 10      # linear warmup duration
+  min_lr: 0.0            # final LR after cosine decay
+  weight_decay: 1.0e-4
+  momentum: 0.9
+
+checkpoint:
+  output_dir: "checkpoints"
