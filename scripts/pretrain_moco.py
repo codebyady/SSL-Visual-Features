@@ -15,13 +15,27 @@ from utils.distributed import init_distributed_mode, is_main_process
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 5: DDP-ready)")
+    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 6: LR scheduling)")
 
     # basic training hyperparams
-    parser.add_argument("--epochs", type=int, default=1, help="number of epochs")
-    parser.add_argument("--batch-size", type=int, default=64, help="batch size")
+    parser.add_argument("--epochs", type=int, default=200, help="number of epochs")
+    parser.add_argument("--batch-size", type=int, default=256, help="batch size")
     parser.add_argument(
-        "--lr", type=float, default=0.03, help="learning rate (SGD)"
+        "--lr", type=float, default=0.03, help="base learning rate (before scaling/decay)"
+    )
+
+    # LR schedule
+    parser.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=10,
+        help="number of warmup epochs",
+    )
+    parser.add_argument(
+        "--min-lr",
+        type=float,
+        default=0.0,
+        help="minimum learning rate (cosine decay end)",
     )
 
     # model / MoCo params
@@ -149,7 +163,7 @@ def main():
 
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,  # <-- we'll fix this typo below; keep reading :)
+        batch_size=args.batch_size,
         shuffle=(sampler is None),
         sampler=sampler,
         num_workers=4 if device.type == "cuda" else 0,
@@ -182,7 +196,7 @@ def main():
     # optimizer (MoCo v2 uses SGD + momentum)
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=args.lr,
+        lr=args.lr,          # base LR (we'll schedule it per epoch)
         momentum=0.9,
         weight_decay=1e-4,
     )
@@ -214,6 +228,10 @@ def main():
 
     if is_main_process():
         print("Starting training...")
+        print(
+            f"LR schedule: base_lr={args.lr}, warmup_epochs={args.warmup_epochs}, "
+            f"min_lr={args.min_lr}, total_epochs={args.epochs}"
+        )
 
     train_moco(
         model=model,
@@ -224,10 +242,13 @@ def main():
         start_epoch=start_epoch,
         checkpoint_path=checkpoint_path,
         sampler=sampler,
+        base_lr=args.lr,
+        warmup_epochs=args.warmup_epochs,
+        min_lr=args.min_lr,
     )
 
     if is_main_process():
-        print("Training finished (Phase 5 DDP-ready).")
+        print("Training finished (Phase 6 LR scheduling).")
 
 
 if __name__ == "__main__":
