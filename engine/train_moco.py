@@ -1,11 +1,13 @@
 # mocomotion/engine/train_moco.py
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from utils.checkpoint import save_checkpoint, get_model_state_dict
 
 
 def train_moco_one_epoch(
@@ -56,16 +58,16 @@ def train_moco(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     epochs: int,
+    start_epoch: int = 0,
+    checkpoint_path: Optional[str] = None,
 ) -> None:
     """
-    Simple multi-epoch training loop around train_moco_one_epoch.
+    Multi-epoch training loop around train_moco_one_epoch.
 
-    This is intentionally minimal for Phase 3:
-    - no scheduler
-    - no checkpointing
-    - no distributed
+    - start_epoch: allows resuming from a checkpoint.
+    - checkpoint_path: if not None, save after each epoch.
     """
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         stats = train_moco_one_epoch(
             model=model,
             dataloader=dataloader,
@@ -74,3 +76,12 @@ def train_moco(
             epoch=epoch,
         )
         print(f"[Epoch {epoch}] avg loss: {stats['loss']:.3f}")
+
+        if checkpoint_path is not None:
+            state = {
+                "epoch": epoch,
+                "model": get_model_state_dict(model),
+                "optimizer": optimizer.state_dict(),
+            }
+            save_checkpoint(state, checkpoint_path)
+            print(f"Saved checkpoint to: {checkpoint_path}")

@@ -1,17 +1,19 @@
 # mocomotion/scripts/pretrain_moco.py
 
 import argparse
+import os
 
 import torch
 from torch.utils.data import DataLoader
 
 from data.datasets import build_pretrain_dataset
-from moco.builder import MoCo
 from engine.train_moco import train_moco
+from moco.builder import MoCo
+from utils.checkpoint import load_checkpoint
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 3 minimal)")
+    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 4: checkpoints)")
 
     # basic training hyperparams
     parser.add_argument("--epochs", type=int, default=1, help="number of epochs")
@@ -56,6 +58,23 @@ def parse_args():
         ),
     )
 
+    # checkpoint / output
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="checkpoints",
+        help="directory to save checkpoints",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default="",
+        help=(
+            "path to a checkpoint to resume from. "
+            "If empty, will look for <output-dir>/checkpoint_latest.pth."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -73,7 +92,6 @@ def main():
     )
 
     if args.max_samples > 0:
-        # for fast local testing; don't do this on the cluster
         from torch.utils.data import Subset
 
         dataset = Subset(dataset, range(min(args.max_samples, len(dataset))))
@@ -107,6 +125,28 @@ def main():
         weight_decay=1e-4,
     )
 
+    # checkpoint path logic
+    if args.resume:
+        checkpoint_path = args.resume
+    else:
+        checkpoint_path = os.path.join(args.output_dir, "checkpoint_latest.pth")
+
+    start_epoch = 0
+    if os.path.isfile(checkpoint_path):
+        print(f"Found checkpoint at {checkpoint_path}, loading to resume...")
+        ckpt = load_checkpoint(checkpoint_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        print(f"Resuming from epoch {start_epoch}.")
+    else:
+        if args.resume:
+            print(f"WARNING: --resume given but file not found: {checkpoint_path}")
+        else:
+            print("No existing checkpoint found, training from scratch.")
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
     print("Starting training...")
     train_moco(
         model=model,
@@ -114,8 +154,10 @@ def main():
         optimizer=optimizer,
         device=device,
         epochs=args.epochs,
+        start_epoch=start_epoch,
+        checkpoint_path=checkpoint_path,
     )
-    print("Training finished (Phase 3 minimal).")
+    print("Training finished (Phase 4 with checkpoints).")
 
 
 if __name__ == "__main__":
