@@ -5,15 +5,17 @@ import os
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from data.datasets import build_pretrain_dataset
 from engine.train_moco import train_moco
 from moco.builder import MoCo
 from utils.checkpoint import load_checkpoint
+from utils.distributed import init_distributed_mode, is_main_process
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 4: checkpoints)")
+    parser = argparse.ArgumentParser(description="MoCo v2 pretraining (Phase 5: DDP-ready)")
 
     # basic training hyperparams
     parser.add_argument("--epochs", type=int, default=1, help="number of epochs")
@@ -75,15 +77,51 @@ def parse_args():
         ),
     )
 
+    # distributed training
+    parser.add_argument(
+        "--dist-url",
+        type=str,
+        default="env://",
+        help="url used to set up distributed training",
+    )
+    parser.add_argument(
+        "--dist-backend",
+        type=str,
+        default="nccl",
+        help="distributed backend",
+    )
+    parser.add_argument(
+        "--world-size",
+        type=int,
+        default=1,
+        help="number of processes participating in the job",
+    )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=0,
+        help="rank of this process",
+    )
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
+    # initialize (or decide not to use) distributed mode
+    init_distributed_mode(args)
+
     # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    if torch.cuda.is_available() and getattr(args, "gpu", None) is not None:
+        device = torch.device("cuda", args.gpu)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    if is_main_process():
+        print(f"Using device: {device}")
 
     # dataset + dataloader
     dataset = build_pretrain_dataset(
@@ -95,12 +133,25 @@ def main():
         from torch.utils.data import Subset
 
         dataset = Subset(dataset, range(min(args.max_samples, len(dataset))))
-        print(f"Using a subset of {len(dataset)} images for debugging.")
+        if is_main_process():
+            print(f"Using a subset of {len(dataset)} images for debugging.")
+
+    # sampler: DistributedSampler in DDP, else None
+    if getattr(args, "distributed", False):
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=args.world_size,
+            rank=args.rank,
+            shuffle=True,
+        )
+    else:
+        sampler = None
 
     dataloader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_size=args.batch_size,  # <-- we'll fix this typo below; keep reading :)
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=4 if device.type == "cuda" else 0,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
@@ -116,6 +167,17 @@ def main():
         mlp=not args.no_mlp,
     )
     model.to(device)
+
+    # wrap with DDP if distributed
+    if getattr(args, "distributed", False) and torch.cuda.is_available():
+        from torch.nn.parallel import DistributedDataParallel as DDP
+
+        model = DDP(
+            model,
+            device_ids=[args.gpu],
+            output_device=args.gpu,
+            find_unused_parameters=False,
+        )
 
     # optimizer (MoCo v2 uses SGD + momentum)
     optimizer = torch.optim.SGD(
@@ -133,21 +195,26 @@ def main():
 
     start_epoch = 0
     if os.path.isfile(checkpoint_path):
-        print(f"Found checkpoint at {checkpoint_path}, loading to resume...")
+        if is_main_process():
+            print(f"Found checkpoint at {checkpoint_path}, loading to resume...")
         ckpt = load_checkpoint(checkpoint_path, map_location=device)
-        model.load_state_dict(ckpt["model"])
+        model_state = ckpt["model"]
+        model.load_state_dict(model_state)
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = ckpt.get("epoch", 0) + 1
-        print(f"Resuming from epoch {start_epoch}.")
+        if is_main_process():
+            print(f"Resuming from epoch {start_epoch}.")
     else:
-        if args.resume:
+        if args.resume and is_main_process():
             print(f"WARNING: --resume given but file not found: {checkpoint_path}")
-        else:
+        elif is_main_process():
             print("No existing checkpoint found, training from scratch.")
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    print("Starting training...")
+    if is_main_process():
+        print("Starting training...")
+
     train_moco(
         model=model,
         dataloader=dataloader,
@@ -156,8 +223,11 @@ def main():
         epochs=args.epochs,
         start_epoch=start_epoch,
         checkpoint_path=checkpoint_path,
+        sampler=sampler,
     )
-    print("Training finished (Phase 4 with checkpoints).")
+
+    if is_main_process():
+        print("Training finished (Phase 5 DDP-ready).")
 
 
 if __name__ == "__main__":
