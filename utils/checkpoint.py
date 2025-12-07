@@ -1,7 +1,7 @@
 # mocomotion/utils/checkpoint.py
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import torch
 
@@ -20,7 +20,7 @@ def save_checkpoint(state: Dict[str, Any], filename: str) -> None:
     torch.save(state, filename)
 
 
-def load_checkpoint(filename: str, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
+def load_checkpoint(filename: str, map_location: Union[str, torch.device] = "cpu") -> Dict[str, Any]:
     """
     Load training state from a file.
     """

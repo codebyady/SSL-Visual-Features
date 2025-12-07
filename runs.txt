@@ -1,0 +1,45 @@
+Normal KNN:
+for k in 5 10 20 50 100                                                             
+do
+    python3 -m scripts.make_submission_moco_knn \
+        --data-dir test1 \
+        --checkpoint checkpoints/checkpoint_latest.pth \
+        --output submission_moco_k${k}_img128.csv \
+        --device cuda \
+        --batch-size 32 \
+        --k $k \
+        --image-size 128
+done
+
+MoCo Style Weighted KNN:
+python3 -m scripts.make_submission_moco_wghtd_knn \
+    --data-dir test1 \
+    --checkpoint checkpoints/checkpoint_latest.pth \
+    --output submission_moco_wghtd_knn.csv \
+    --device cuda \
+    --batch-size 32 \
+    --image-size 128
+
+Linear Probe
+python3 -m scripts.make_submission_moco_linprob \
+  --data-dir test1 \
+  --checkpoint checkpoints/checkpoint_latest.pth \
+  --output submission_moco_linear_img128.csv \
+  --device cuda \
+  --batch-size 32 \
+  --image-size 128 \
+  --C-values 0.1 0.3 1 3 10 \
+  --max-iter 500
+
+Advanced Linear Probe
+python3 -m scripts.make_submission_moco_adv_linprob \
+  --data-dir test1 \
+  --checkpoint checkpoints/checkpoint_latest.pth \
+  --output submission_linear_TTA_best.csv \
+  --device mps \
+  --batch-size 32 \
+  --image-size 128 \
+  --mode tta \
+  --use-standard-scaler \
+  --C-values 0.01 0.5 1 3 5 10 20 30 50 70 90 80 100 120 \
+  --max-iter 500

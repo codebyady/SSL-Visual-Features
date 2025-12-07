@@ -4,3 +4,4 @@ data/pretrain/
 __pycache__
 checkpoints/
 test1/
+submissions/
