@@ -299,7 +299,7 @@ def tune_C_with_cv(
     best_C = None
     best_score = -1.0
 
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=52)
     for C in C_values:
         scores = []
         for fold_idx, (tr_idx, val_idx) in enumerate(skf.split(X_train, y_train)):
@@ -314,6 +314,7 @@ def tune_C_with_cv(
                 max_iter=max_iter,
                 n_jobs=-1,
                 verbose=0,
+                random_state=52,
             )
             clf.fit(X_tr, y_tr)
             score = clf.score(X_val, y_val)
@@ -353,6 +354,7 @@ def tune_C_on_val(
             max_iter=max_iter,
             n_jobs=-1,
             verbose=0,
+            random_state=52,
         )
         clf.fit(X_train, y_train)
         val_pred = clf.predict(X_val)
@@ -674,6 +676,7 @@ def main():
         max_iter=args.max_iter,
         n_jobs=-1,
         verbose=1,
+        random_state=52,
     )
     final_clf.fit(all_feats, all_labels)
 
